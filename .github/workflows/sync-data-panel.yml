@@ -1,0 +1,59 @@
+name: Sync data panel
+
+on:
+  schedule:
+    # 每天 20:23（北京时间）同步原站已发布的数据镜像。
+    - cron: '23 12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-data-panel
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Download the published upstream data
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://raw.githubusercontent.com/amiya866/metals-framework/main/data-panel/%E9%9D%A2%E6%9D%BF%E6%95%B0%E6%8D%AE.js" \
+            --output "data-panel/面板数据.js"
+
+      - name: Validate the data before publishing
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("data-panel/面板数据.js")
+          text = path.read_text(encoding="utf-8").strip()
+          prefix = "window.PANEL_DATA = "
+          if not text.startswith(prefix):
+              raise SystemExit("Unexpected data file format")
+          payload = text[len(prefix):].rstrip(";")
+          data = json.loads(payload)
+          if not isinstance(data.get("series"), list) or not data["series"]:
+              raise SystemExit("No panel series found")
+          if not data.get("built_at"):
+              raise SystemExit("Missing build timestamp")
+          print(f"Validated {len(data['series'])} series built at {data['built_at']}")
+          PY
+
+      - name: Commit and push only when the data changed
+        run: |
+          if git diff --quiet -- "data-panel/面板数据.js"; then
+            echo "Data panel is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "data-panel/面板数据.js"
+          git commit -m "chore: sync data panel $(date -u +%Y-%m-%d)"
+          git push
